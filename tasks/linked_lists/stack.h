@@ -20,6 +20,6 @@ stack_entry_t* stack_pop(struct list_head *stack);
 #define STACK_ENTRY_DATA_RESET(stack_entry, new_data) \
     do { \
         (stack_entry)->data = new_data; \
-    } while(0)
+    } while(0)    
 
 #endif //_LL_STACK_H
