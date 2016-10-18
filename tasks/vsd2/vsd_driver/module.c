@@ -1,14 +1,15 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
 #include <uapi/linux/fs.h>
 #include <uapi/linux/stat.h>
 #include <linux/platform_device.h>
-#include <linux/ioport.h>
+#include <linux/mm.h>
+#include <linux/vmalloc.h>
+#include <linux/slab.h>
 #include "vsd_ioctl.h"
 
 #define LOG_TAG "[VSD_CHAR_DEVICE] "
@@ -17,6 +18,7 @@ typedef struct vsd_dev {
     struct miscdevice mdev;
     char *vbuf;
     size_t buf_size;
+    size_t max_buf_size;
 } vsd_dev_t;
 static vsd_dev_t *vsd_dev;
 
@@ -33,23 +35,23 @@ static int vsd_dev_release(struct inode *inode, struct file *filp)
 }
 
 static ssize_t vsd_dev_read(struct file *filp,
-    char __user *read_user_buf, size_t read_size, loff_t *fpos) 
+    char __user *read_user_buf, size_t read_size, loff_t *fpos)
 {
-    if (*fpos > vsd_dev->buf_size)
-        return -EINVAL;
+    if (*fpos >= vsd_dev->buf_size)
+        return 0;
 
     if (*fpos + read_size >= vsd_dev->buf_size)
         read_size = vsd_dev->buf_size - *fpos;
 
     if (copy_to_user(read_user_buf, vsd_dev->vbuf + *fpos, read_size))
         return -EFAULT;
-
+ 
     *fpos += read_size;
     return read_size;
 }
 
 static ssize_t vsd_dev_write(struct file *filp,
-    const char __user *write_user_data, size_t write_size, loff_t *fpos) 
+    const char __user *write_user_data, size_t write_size, loff_t *fpos)
 {
     if (*fpos >= vsd_dev->buf_size)
         return -EINVAL;
@@ -89,33 +91,36 @@ static loff_t vsd_dev_llseek(struct file *filp, loff_t off, int whence)
     return newpos;
 }
 
-static long vsd_ioctl_get_size(vsd_ioctl_get_size_arg_t __user *uarg) 
+static long vsd_ioctl_get_size(vsd_ioctl_get_size_arg_t __user *uarg)
 {
     vsd_ioctl_get_size_arg_t arg;
-    arg.size = vsd_dev->buf_size;
-    if (copy_to_user(uarg, &arg, sizeof(arg)))
-        return -EFAULT;
-
-    return 0;
-}
-
-static long vsd_ioctl_set_size(vsd_ioctl_set_size_arg_t __user *uarg) 
-{
-    vsd_ioctl_set_size_arg_t arg;
     if (copy_from_user(&arg, uarg, sizeof(arg)))
         return -EFAULT;
 
-    if (arg.size <= vsd_dev->buf_size) {
+    arg.size = vsd_dev->buf_size;
+
+    if (copy_to_user(uarg, &arg, sizeof(arg)))
+        return -EFAULT;
+    return 0;
+}
+
+static long vsd_ioctl_set_size(vsd_ioctl_set_size_arg_t __user *uarg)
+{
+    vsd_ioctl_set_size_arg_t arg;
+    if (0 /* TODO device is currently mapped */)
+        return -EBUSY;
+
+    if (copy_from_user(&arg, uarg, sizeof(arg)))
+        return -EFAULT;
+
+    if (arg.size <= vsd_dev->max_buf_size) {
         vsd_dev->buf_size = arg.size;
         return 0;
-    } else {
-        printk(KERN_ALERT "arg.size: %zd\n vsd_dev->buf_size: %zd\n", arg.size, vsd_dev->buf_size);
-        return -ENOMEM;
-    }
+    } else return -ENOMEM;
 }
 
 static long vsd_dev_ioctl(struct file *filp, unsigned int cmd,
-        unsigned long arg) 
+        unsigned long arg)
 {
     switch(cmd) {
         case VSD_IOCTL_GET_SIZE:
@@ -127,6 +132,51 @@ static long vsd_dev_ioctl(struct file *filp, unsigned int cmd,
         default:
             return -ENOTTY;
     }
+}
+
+static struct vm_operations_struct vsd_dev_vma_ops = {};
+
+static int map_vmalloc_range(struct vm_area_struct *uvma, void *kaddr, size_t size)
+{
+    unsigned long uaddr = uvma->vm_start;
+    if (!PAGE_ALIGNED(uaddr) || !PAGE_ALIGNED(kaddr)
+            || !PAGE_ALIGNED(size))
+        return -EINVAL;
+
+    /*  
+     * Remember that all the work with memory is done using pages.
+     * PAGE_SIZE is minimal size of memory we can map/unmap
+     * anywhere.
+     * Note that vmalloced VSD address range is not physically
+     * continuous. So we need to map each vmalloced page separetely.
+     * Use vmalloc_to_page and vm_insert_page functions for this.
+     */
+    // TODO
+
+    uvma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+    return 0;
+}
+
+static int vsd_dev_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    int ret = 0;
+    unsigned long offset, size;
+
+    size = PAGE_ALIGN(vma->vm_end - vma->vm_start);
+    offset = vma->vm_pgoff << PAGE_SHIFT;
+
+    if ((offset + size) > vsd_dev->buf_size)
+       return -EINVAL;
+
+    if (!(vma->vm_flags & VM_SHARED))
+        return -EINVAL;
+
+    if ((ret = map_vmalloc_range(vma, vsd_dev->vbuf + offset, size)))
+        return ret;
+
+    vma->vm_ops = &vsd_dev_vma_ops;
+
+    return 0;
 }
 
 static struct file_operations vsd_dev_fops = {
@@ -148,7 +198,8 @@ static int vsd_driver_probe(struct platform_device *pdev)
     struct resource *vsd_phy_mem_buf_res = NULL;
     pr_notice(LOG_TAG "probing for device %s\n", pdev->name);
 
-    vsd_dev = (vsd_dev_t*)kzalloc(sizeof(vsd_dev_t), GFP_KERNEL);
+    vsd_dev = (vsd_dev_t*)
+        kzalloc(sizeof(*vsd_dev), GFP_KERNEL);
     if (!vsd_dev) {
         ret = -ENOMEM;
         pr_warn(LOG_TAG "Can't allocate memory\n");
@@ -164,18 +215,14 @@ static int vsd_driver_probe(struct platform_device *pdev)
         goto error_misc_reg;
 
     vsd_phy_mem_buf_res =
-        platform_get_resource_byname(pdev, IORESOURCE_MEM, "buffer");
+        platform_get_resource_byname(pdev, IORESOURCE_REG, "buffer");
     if (!vsd_phy_mem_buf_res) {
         ret = -ENOMEM;
         goto error_get_buf;
     }
-    vsd_dev->vbuf = phys_to_virt(vsd_phy_mem_buf_res->start);
-    if (vsd_phy_mem_buf_res->end < vsd_phy_mem_buf_res->start) {
-        ret = -ENOMEM;
-        pr_warn(LOG_TAG "Mixed up end and start. REMOVE THIS!");
-        goto error_get_buf;
-    }
-    vsd_dev->buf_size = vsd_phy_mem_buf_res->end - vsd_phy_mem_buf_res->start;
+    vsd_dev->vbuf = (char*)vsd_phy_mem_buf_res->start;
+    vsd_dev->max_buf_size = resource_size(vsd_phy_mem_buf_res);
+    vsd_dev->buf_size = vsd_dev->max_buf_size;
 
     pr_notice(LOG_TAG "VSD dev with MINOR %u"
         " has started successfully\n", vsd_dev->mdev.minor);
@@ -190,11 +237,12 @@ error_alloc:
     return ret;
 }
 
-static int vsd_driver_remove(struct platform_device *dev) 
+static int vsd_driver_remove(struct platform_device *dev)
 {
     pr_notice(LOG_TAG "removing device %s\n", dev->name);
     misc_deregister(&vsd_dev->mdev);
     kfree(vsd_dev);
+    vsd_dev = NULL;
     return 0;
 }
 
@@ -207,12 +255,12 @@ static struct platform_driver vsd_driver = {
     }
 };
 
-static int __init vsd_driver_init(void) 
+static int __init vsd_driver_init(void)
 {
     return platform_driver_register(&vsd_driver);
 }
 
-static void __exit vsd_driver_exit(void) 
+static void __exit vsd_driver_exit(void)
 {
     platform_driver_unregister(&vsd_driver);
 }
