@@ -19,6 +19,7 @@ typedef struct vsd_dev {
     char *vbuf;
     size_t buf_size;
     size_t max_buf_size;
+    int ref_count;
 } vsd_dev_t;
 static vsd_dev_t *vsd_dev;
 
@@ -107,7 +108,7 @@ static long vsd_ioctl_get_size(vsd_ioctl_get_size_arg_t __user *uarg)
 static long vsd_ioctl_set_size(vsd_ioctl_set_size_arg_t __user *uarg)
 {
     vsd_ioctl_set_size_arg_t arg;
-    if (0 /* TODO device is currently mapped */)
+    if (vsd_dev->ref_count > 0)
         return -EBUSY;
 
     if (copy_from_user(&arg, uarg, sizeof(arg)))
@@ -134,11 +135,23 @@ static long vsd_dev_ioctl(struct file *filp, unsigned int cmd,
     }
 }
 
-static struct vm_operations_struct vsd_dev_vma_ops = {};
+void vsd_dev_vma_open(struct vm_area_struct *vma) {
+    vsd_dev->ref_count++;
+}
+
+void vsd_dev_vma_close(struct vm_area_struct *vma) {
+    vsd_dev->ref_count--;
+}
+
+static struct vm_operations_struct vsd_dev_vma_ops = {
+    open: vsd_dev_vma_open,
+    close: vsd_dev_vma_close,
+};
 
 static int map_vmalloc_range(struct vm_area_struct *uvma, void *kaddr, size_t size)
 {
     unsigned long uaddr = uvma->vm_start;
+    size_t offset;
     if (!PAGE_ALIGNED(uaddr) || !PAGE_ALIGNED(kaddr)
             || !PAGE_ALIGNED(size))
         return -EINVAL;
@@ -151,7 +164,11 @@ static int map_vmalloc_range(struct vm_area_struct *uvma, void *kaddr, size_t si
      * continuous. So we need to map each vmalloced page separetely.
      * Use vmalloc_to_page and vm_insert_page functions for this.
      */
-    // TODO
+    for(offset = 0; offset < size; offset += PAGE_SIZE) {
+        int ret_val = vm_insert_page(uvma, uaddr + offset, vmalloc_to_page((char*)kaddr + offset));
+        if(ret_val)
+            return ret_val;
+    }
 
     uvma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
     return 0;
@@ -223,6 +240,7 @@ static int vsd_driver_probe(struct platform_device *pdev)
     vsd_dev->vbuf = (char*)vsd_phy_mem_buf_res->start;
     vsd_dev->max_buf_size = resource_size(vsd_phy_mem_buf_res);
     vsd_dev->buf_size = vsd_dev->max_buf_size;
+    vsd_dev->ref_count = 0;
 
     pr_notice(LOG_TAG "VSD dev with MINOR %u"
         " has started successfully\n", vsd_dev->mdev.minor);
