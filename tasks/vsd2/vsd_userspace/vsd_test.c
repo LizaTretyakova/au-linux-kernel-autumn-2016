@@ -21,7 +21,6 @@ static void run_one_test(off_t vsd_offset, size_t vsd_size) {
     }
 
     TEST(vsd_write(vsd_rw_buf, vsd_offset, vsd_size) >= 0);
-
     char* vsd_mem = vsd_mmap(vsd_offset);
     TEST(vsd_mem);
 

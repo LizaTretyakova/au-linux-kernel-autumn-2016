@@ -179,6 +179,8 @@ static int vsd_dev_mmap(struct file *filp, struct vm_area_struct *vma)
     int ret = 0;
     unsigned long offset, size;
 
+    printk(KERN_ALERT "DRIVER: MMAP\n");
+
     size = PAGE_ALIGN(vma->vm_end - vma->vm_start);
     offset = vma->vm_pgoff << PAGE_SHIFT;
 
@@ -192,6 +194,7 @@ static int vsd_dev_mmap(struct file *filp, struct vm_area_struct *vma)
         return ret;
 
     vma->vm_ops = &vsd_dev_vma_ops;
+    vsd_dev_vma_open(vma);
 
     return 0;
 }
@@ -202,6 +205,7 @@ static struct file_operations vsd_dev_fops = {
     .release = vsd_dev_release,
     .read = vsd_dev_read,
     .write = vsd_dev_write,
+    .mmap = vsd_dev_mmap,
     .llseek = vsd_dev_llseek,
     .unlocked_ioctl = vsd_dev_ioctl
 };

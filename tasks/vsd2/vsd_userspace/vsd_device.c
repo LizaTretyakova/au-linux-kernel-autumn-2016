@@ -88,8 +88,10 @@ ssize_t vsd_write(const char* src, off_t offset, size_t size)
 {
     CHECK_STATE_CORRECTNESS(err)
 
+    printf("VSD_WRITE: src %p, offt %zu, size %zu\n", src, offset, size);
     res = write(filp, src + offset, size);
     err = errno;
+    printf("%d\n", res);
     if(res < 0) {
         return -err;
     }
@@ -100,20 +102,35 @@ ssize_t vsd_write(const char* src, off_t offset, size_t size)
 void* vsd_mmap(size_t offset)
 {
     size_t size;
+    void* ret;
     CHECK_STATE_CORRECTNESS(NULL)
+
+    printf("VSD_MMAP: offset %zu\n", offset);
 
     if(vsd_get_size(&size) || offset % sysconf(_SC_PAGE_SIZE)) {
         return NULL;
     }
 
-    return mmap(NULL, size - offset,
-                PROT_EXEC | PROT_READ | PROT_WRITE, MAP_ANON,
-                -1, offset);
+    printf("VSD_MMAP: size %zu\n", size);
+    printf("VSD_MMAP: filp %d\n", filp);
+
+    ret = mmap(NULL, size - offset,
+               PROT_EXEC | PROT_READ | PROT_WRITE, MAP_SHARED,
+               filp, offset);
+    if(ret == MAP_FAILED) {
+        return NULL;
+    }
+    return ret;
 }
 
 int vsd_munmap(void* addr, size_t offset)
 {
+    size_t size;
     CHECK_STATE_CORRECTNESS(err)
 
-    return munmap(addr, offset);
+    if(vsd_get_size(&size)) {
+        return -1;
+    }
+
+    return munmap(addr,  - offset);
 }
