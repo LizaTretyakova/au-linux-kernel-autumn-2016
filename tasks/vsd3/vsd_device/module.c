@@ -55,54 +55,77 @@ static vsd_plat_device_t dev = {
 };
 
 static ssize_t vsd_dev_read(char *dst, size_t dst_size, size_t offset) {
-    (void)dst;
-    (void)dst_size;
-    (void)offset;
-    // TODO
-    return -EINVAL;
+    pr_notice(LOG_TAG "vsd_dev_read\n");
+
+    if (!memcpy(dst, dev.vbuf + offset, dst_size)) {
+        pr_warn(LOG_TAG "Can't read data\n");
+        return -EFAULT;
+    }
+
+    return dst_size;
 }
 
 static ssize_t vsd_dev_write(char *src, size_t src_size, size_t offset) {
-    (void)src;
-    (void)src_size;
-    (void)offset;
-    // TODO
-    return -EINVAL;
+    pr_notice(LOG_TAG "vsd_dev_write\n");
+
+    if (!memcpy(dev.vbuf + offset, src, src_size)) {
+        pr_warn(LOG_TAG "Can't write data\n");
+        return -EFAULT;
+    }
+
+    return src_size;
 }
 
 static void vsd_dev_set_size(size_t size)
 {
-    (void)size;
-    // TODO
+    pr_notice(LOG_TAG "vsd_dev_set_size\n");
+
+    if(size > dev.buf_size) {
+        pr_warn(LOG_TAG "request too large\n");
+        dev.hwregs->result = -ENOMEM;
+        return;
+    }
+
+    dev.hwregs->dev_size = size;
+    dev.hwregs->result = 0;
 }
 
 static int vsd_dev_cmd_poll_kthread_func(void *data)
 {
     ssize_t ret = 0;
+
     while(!kthread_should_stop()) {
         mb();
         switch(dev.hwregs->cmd) {
             case VSD_CMD_READ:
+                pr_notice(LOG_TAG "VSD_CMD_READ\n");
                 ret = vsd_dev_read(
                         phys_to_virt((phys_addr_t)dev.hwregs->dma_paddr),
                         (size_t)dev.hwregs->dma_size,
                         (size_t)dev.hwregs->dev_offset
                 );
+                dev.hwregs->result = ret;
+                dev.hwregs->cmd = VSD_CMD_NONE;
+                tasklet_schedule((struct tasklet_struct *)(dev.hwregs->tasklet_vaddr));
                 break;
             case VSD_CMD_WRITE:
+                pr_notice(LOG_TAG "VSD_CMD_WRITE\n");
                 ret = vsd_dev_write(
                         phys_to_virt((phys_addr_t)dev.hwregs->dma_paddr),
                         (size_t)dev.hwregs->dma_size,
                         (size_t)dev.hwregs->dev_offset
                 );
+                dev.hwregs->result = ret;
+                dev.hwregs->cmd = VSD_CMD_NONE;
+                tasklet_schedule((struct tasklet_struct *)(dev.hwregs->tasklet_vaddr));
                 break;
             case VSD_CMD_SET_SIZE:
+                pr_notice(LOG_TAG "VSD_CMD_SET_SIZE\n");
                 vsd_dev_set_size((size_t)dev.hwregs->dev_offset);
+                dev.hwregs->cmd = VSD_CMD_NONE;
+                tasklet_schedule((struct tasklet_struct *)(dev.hwregs->tasklet_vaddr));
                 break;
         }
-
-        // TODO notify vsd_driver about finished cmd
-        // Sleep one sec not to waste CPU on polling
         ssleep(1);
     }
     pr_notice(LOG_TAG "cmd poll thread exited");
