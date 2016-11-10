@@ -90,6 +90,7 @@ static ssize_t vsd_dev_read(struct file *filp,
 
     read_buf = (char*)kmalloc(read_size, GFP_KERNEL);
     if(read_buf == NULL) {
+        mutex_unlock(&vsd_dev->mtx);
         return -ENOMEM;
     }
 
@@ -120,6 +121,7 @@ static ssize_t vsd_dev_write(struct file *filp,
     mutex_lock(&vsd_dev->mtx);
 
     if (*fpos >= vsd_dev->hwregs->dev_size) {
+        mutex_unlock(&vsd_dev->mtx);
         return 0;
     }
     if (*fpos + write_size >= vsd_dev->hwregs->dev_size) {
@@ -128,9 +130,11 @@ static ssize_t vsd_dev_write(struct file *filp,
 
     write_buf = (char*)kzalloc(write_size, GFP_KERNEL);
     if(write_buf == NULL) {
+        mutex_unlock(&vsd_dev->mtx);
         return -ENOMEM;
     }
     if (copy_from_user(write_buf, write_user_buf, write_size)) {
+        mutex_unlock(&vsd_dev->mtx);
         return -EFAULT;
     }
 

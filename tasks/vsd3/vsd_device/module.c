@@ -82,7 +82,7 @@ static void vsd_dev_set_size(size_t size)
 
     if(size > dev.buf_size) {
         pr_warn(LOG_TAG "request too large\n");
-        dev.hwregs->result = -ENOMEM;
+        dev.hwregs->result = -EINVAL;
         return;
     }
 
@@ -105,7 +105,9 @@ static int vsd_dev_cmd_poll_kthread_func(void *data)
                         (size_t)dev.hwregs->dev_offset
                 );
                 dev.hwregs->result = ret;
+                wmb();
                 dev.hwregs->cmd = VSD_CMD_NONE;
+                wmb();
                 tasklet_schedule((struct tasklet_struct *)(dev.hwregs->tasklet_vaddr));
                 break;
             case VSD_CMD_WRITE:
